@@ -49,6 +49,45 @@ export function parseGasDate(dateVal: unknown): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Push pending local deletions → GAS (POST)
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function pushPendingDeletions(): Promise<number> {
+  const pendingDeletions = await db.pendingDeletions.toArray();
+  if (pendingDeletions.length === 0) return 0;
+
+  const deleteIds = pendingDeletions.map((d) => d.id);
+  try {
+    const response = await fetch(GAS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'delete', ids: deleteIds }),
+    });
+
+    if (response.ok) {
+      const text = await response.text();
+      let json: any = null;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        // Not JSON
+      }
+
+      if (json && (json.status === 'success' || json.status === 'ok')) {
+        await db.pendingDeletions.bulkDelete(deleteIds);
+        console.info(`[SyncService] Deleted ${deleteIds.length} transaction(s) in GAS.`);
+        return deleteIds.length;
+      }
+    }
+    console.warn('[SyncService] GAS delete POST did not return success status. Retaining pending deletions locally.');
+    return 0;
+  } catch (err) {
+    console.warn('[SyncService] Could not push deletions to GAS:', err);
+    return 0;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Push pending local transactions → GAS (POST)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -157,52 +196,67 @@ async function pullLatestTransactions(): Promise<number> {
     throw new Error('GAS GET did not return a valid transactions list');
   }
 
-  const incoming: Transaction[] = rawTxns.map((t: any) => {
-    const id = String(t.ID || t.id || Math.random().toString(36).slice(2));
-    const date = parseGasDate(t.Date || t.date);
-    const rawType = t.Type || t.type;
-    const type: TransactionType =
-      rawType === 'Income' || rawType === 'Transfer' ? rawType : 'Expense';
-    const label = String(t.Lable ?? t.Label ?? t.label ?? '');
-    const categoryId = t.Catrgory_ID ? String(t.Catrgory_ID) : (t.categoryId ? String(t.categoryId) : null);
-    const accountId = String(t.Account_ID || t.accountId || '');
-    const toAccountId = t['To Account ID'] ? String(t['To Account ID']) : (t.toAccountId ? String(t.toAccountId) : null);
-    const currency = String(t.Currency || t.currency || 'ILS');
-    const amount = Math.abs(Number(t.Amount || t.amount || 0));
-    const converted = t['Converted To Account']
-      ? Number(t['Converted To Account'])
-      : (t.convertedToAccountAmount ? Number(t.convertedToAccountAmount) : null);
+  // Exclude transactions that are pending local deletion
+  const pendingDeletions = await db.pendingDeletions.toArray();
+  const pendingDeleteIds = new Set(pendingDeletions.map((d) => d.id));
 
-    let tags: string[] = [];
-    const rawTags = t.Tags ?? t.tags;
-    if (Array.isArray(rawTags)) {
-      tags = rawTags.map(String);
-    } else if (typeof rawTags === 'string' && rawTags.trim()) {
-      tags = rawTags.split(',').map((s) => s.trim()).filter(Boolean);
-    }
+  const incoming: Transaction[] = rawTxns
+    .filter((t: any) => !pendingDeleteIds.has(String(t.ID || t.id)))
+    .map((t: any) => {
+      const id = String(t.ID || t.id || Math.random().toString(36).slice(2));
+      const date = parseGasDate(t.Date || t.date);
+      const rawType = t.Type || t.type;
+      const type: TransactionType =
+        rawType === 'Income' || rawType === 'Transfer' ? rawType : 'Expense';
+      const label = String(t.Lable ?? t.Label ?? t.label ?? '');
+      const categoryId = t.Catrgory_ID ? String(t.Catrgory_ID) : (t.categoryId ? String(t.categoryId) : null);
+      const accountId = String(t.Account_ID || t.accountId || '');
+      const toAccountId = t['To Account ID'] ? String(t['To Account ID']) : (t.toAccountId ? String(t.toAccountId) : null);
+      const currency = String(t.Currency || t.currency || 'ILS');
+      const amount = Math.abs(Number(t.Amount || t.amount || 0));
+      const converted = t['Converted To Account']
+        ? Number(t['Converted To Account'])
+        : (t.convertedToAccountAmount ? Number(t.convertedToAccountAmount) : null);
 
-    const refund = Boolean(t.Refund || t.refund);
+      let tags: string[] = [];
+      const rawTags = t.Tags ?? t.tags;
+      if (Array.isArray(rawTags)) {
+        tags = rawTags.map(String);
+      } else if (typeof rawTags === 'string' && rawTags.trim()) {
+        tags = rawTags.split(',').map((s) => s.trim()).filter(Boolean);
+      }
 
-    return {
-      id,
-      syncId: id,
-      date,
-      type,
-      label,
-      categoryId,
-      accountId,
-      toAccountId,
-      currency,
-      amount,
-      convertedToAccountAmount: converted,
-      tags,
-      refund,
-      synced: 1 as const,
-    };
-  });
+      const refund = Boolean(t.Refund || t.refund);
+
+      return {
+        id,
+        syncId: id,
+        date,
+        type,
+        label,
+        categoryId,
+        accountId,
+        toAccountId,
+        currency,
+        amount,
+        convertedToAccountAmount: converted,
+        tags,
+        refund,
+        synced: 1 as const,
+      };
+    });
 
   if (incoming.length > 0) {
     await db.transactions.bulkPut(incoming);
+
+    // Remove any locally synced transactions that no longer exist in GAS (remote deletions)
+    const incomingIds = new Set(incoming.map((t) => t.id));
+    const localSynced = await db.transactions.where('synced').equals(1).toArray();
+    const toRemove = localSynced.filter((t) => !incomingIds.has(t.id)).map((t) => t.id);
+    if (toRemove.length > 0) {
+      await db.transactions.bulkDelete(toRemove);
+      console.info(`[SyncService] Removed ${toRemove.length} transaction(s) deleted remotely.`);
+    }
   }
 
   console.info(`[SyncService] Pulled ${incoming.length} transaction(s) from GAS.`);
@@ -232,14 +286,17 @@ export async function syncTransactionsWithGAS(): Promise<SyncResult> {
   }
 
   try {
+    await pushPendingDeletions();
     await pushPendingTransactions();
     const count = await pullLatestTransactions();
-    const pendingStill = await getPendingTransactions();
 
-    if (pendingStill.length > 0) {
+    const pendingStill = await getPendingTransactions();
+    const pendingDeletionsStill = await db.pendingDeletions.count();
+
+    if (pendingStill.length > 0 || pendingDeletionsStill > 0) {
       return {
         status: 'error',
-        message: `נמשכו ${count.toLocaleString('he-IL')} עסקאות, אך ${pendingStill.length} עסקה/ות ממתינות לסנכרון ולא נשמרו בגוגל שיטס (נדרש להוסיף doPost בסקריפט).`,
+        message: `נמשכו ${count.toLocaleString('he-IL')} עסקאות, אך ${pendingStill.length} עסקאות חדשות ו-${pendingDeletionsStill} מחיקות ממתינות לסנכרון.`,
         timestamp: new Date(),
         count,
       };

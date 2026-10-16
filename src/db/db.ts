@@ -11,6 +11,7 @@ export class FinanceDB extends Dexie {
   accounts!: Table<Account, string>;
   categories!: Table<Category, string>;
   tags!: Table<Tag, string>;
+  pendingDeletions!: Table<{ id: string; timestamp: number }, string>;
 
   constructor() {
     super('FinanceDB');
@@ -26,6 +27,14 @@ export class FinanceDB extends Dexie {
       accounts: 'id, currency, active',
       categories: 'id, type',
       tags: 'id, name',
+    });
+
+    this.version(3).stores({
+      transactions: 'id, syncId, date, type, categoryId, accountId, toAccountId, synced',
+      accounts: 'id, currency, active',
+      categories: 'id, type',
+      tags: 'id, name',
+      pendingDeletions: 'id, timestamp',
     });
   }
 }

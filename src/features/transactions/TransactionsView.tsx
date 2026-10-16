@@ -155,8 +155,14 @@ export const TransactionsView: React.FC = () => {
   // ── Delete ────────────────────────────────────────────────────────────────
 
   const handleDelete = async (id: string) => {
-    await db.transactions.delete(id);
-    setDeleteConfirm(null);
+    try {
+      await db.pendingDeletions.put({ id, timestamp: Date.now() });
+      await db.transactions.delete(id);
+      setDeleteConfirm(null);
+      handleSync();
+    } catch (err) {
+      console.error('Error deleting transaction:', err);
+    }
   };
 
   // ── Form open/close ───────────────────────────────────────────────────────
