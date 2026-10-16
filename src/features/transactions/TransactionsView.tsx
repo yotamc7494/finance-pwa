@@ -176,6 +176,11 @@ export const TransactionsView: React.FC = () => {
     setEditingTransaction(null);
   };
 
+  const handleSaved = async () => {
+    closeForm();
+    await handleSync();
+  };
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -360,7 +365,7 @@ export const TransactionsView: React.FC = () => {
         <Modal title={editingTransaction ? 'עריכת פעולה' : 'פעולה חדשה'} onClose={closeForm}>
           <TransactionForm
             editingTransaction={editingTransaction}
-            onSaved={closeForm}
+            onSaved={handleSaved}
             onCancel={closeForm}
           />
         </Modal>

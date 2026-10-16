@@ -183,9 +183,10 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
           synced: 0,
         });
       } else {
+        const id = 'F' + uuidv4().replace(/-/g, '').slice(0, 8);
         const newTransaction: Transaction = {
-          id: uuidv4(),
-          syncId: '',
+          id,
+          syncId: id,
           ...form,
           synced: 0,
         };

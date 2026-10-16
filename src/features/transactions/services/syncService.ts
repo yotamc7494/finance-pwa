@@ -234,6 +234,17 @@ export async function syncTransactionsWithGAS(): Promise<SyncResult> {
   try {
     await pushPendingTransactions();
     const count = await pullLatestTransactions();
+    const pendingStill = await getPendingTransactions();
+
+    if (pendingStill.length > 0) {
+      return {
+        status: 'error',
+        message: `נמשכו ${count.toLocaleString('he-IL')} עסקאות, אך ${pendingStill.length} עסקה/ות ממתינות לסנכרון ולא נשמרו בגוגל שיטס (נדרש להוסיף doPost בסקריפט).`,
+        timestamp: new Date(),
+        count,
+      };
+    }
+
     return {
       status: 'success',
       message: `סונכרנו בהצלחה ${count.toLocaleString('he-IL')} עסקאות מ-Google Sheets!`,
