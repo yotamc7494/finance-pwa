@@ -156,7 +156,7 @@ export const TransactionsView: React.FC = () => {
 
   const handleDelete = async (id: string) => {
     try {
-      await db.pendingDeletions.put({ id, timestamp: Date.now() });
+      await queuePendingDeletion(id, 'Transactions');
       await db.transactions.delete(id);
       setDeleteConfirm(null);
       handleSync();
