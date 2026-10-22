@@ -7,6 +7,7 @@ import type {
   PendingDeletion,
   SyncableTable,
 } from '../features/transactions/types/transaction.types';
+import { SEED_ACCOUNTS, SEED_CATEGORIES, SEED_TAGS } from './seedData';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Database Schema
@@ -102,3 +103,20 @@ export async function queuePendingDeletion(id: string, table: SyncableTable = 'T
     timestamp: Date.now(),
   });
 }
+
+/** Ensure tables have initial seed data if empty */
+export async function ensureInitialData() {
+  const accCount = await db.accounts.count();
+  if (accCount === 0) {
+    await db.accounts.bulkPut(SEED_ACCOUNTS);
+  }
+  const catCount = await db.categories.count();
+  if (catCount === 0) {
+    await db.categories.bulkPut(SEED_CATEGORIES);
+  }
+  const tagCount = await db.tags.count();
+  if (tagCount === 0) {
+    await db.tags.bulkPut(SEED_TAGS);
+  }
+}
+

@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../../db/db';
+import { db, queuePendingDeletion } from '../../db/db';
 import type { Transaction, FilterType, TransactionType } from './types/transaction.types';
 import { TransactionForm } from './components/TransactionForm';
 import {
@@ -61,15 +61,36 @@ const FILTER_LABELS: Record<FilterType, string> = {
   Transfer: 'העברות',
 };
 
-export const TransactionsView: React.FC = () => {
+interface TransactionsViewProps {
+  initialAccountId?: string | null;
+  initialCategoryId?: string | null;
+  onClearAccountFilter?: () => void;
+  onClearCategoryFilter?: () => void;
+  onSync?: () => Promise<void>;
+  isSyncingGlobal?: boolean;
+  syncResultGlobal?: SyncResult | null;
+}
+
+export const TransactionsView: React.FC<TransactionsViewProps> = ({
+  initialAccountId,
+  initialCategoryId,
+  onClearAccountFilter,
+  onClearCategoryFilter,
+  onSync,
+  isSyncingGlobal,
+  syncResultGlobal,
+}) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState<FilterType>('All');
   const [showForm, setShowForm] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
-  const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
-  const [isSyncing, setIsSyncing] = useState(false);
+  const [localSyncResult, setLocalSyncResult] = useState<SyncResult | null>(null);
+  const [isLocalSyncing, setIsLocalSyncing] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [visibleDaysCount, setVisibleDaysCount] = useState(30);
+
+  const isSyncing = isSyncingGlobal !== undefined ? isSyncingGlobal : isLocalSyncing;
+  const syncResult = syncResultGlobal !== undefined ? syncResultGlobal : localSyncResult;
 
   // ── Live query ────────────────────────────────────────────────────────────
 
@@ -98,15 +119,17 @@ export const TransactionsView: React.FC = () => {
   const filtered = useMemo(() => {
     return allTransactions.filter((t) => {
       const matchesType = activeFilter === 'All' || t.type === activeFilter;
+      const matchesAccount = !initialAccountId || t.accountId === initialAccountId || t.toAccountId === initialAccountId;
+      const matchesCategory = !initialCategoryId || t.categoryId === initialCategoryId;
       const matchesSearch =
         !searchQuery ||
         t.label.toLowerCase().includes(searchQuery.toLowerCase()) ||
         t.date.includes(searchQuery) ||
         (t.categoryId && categoryMap.get(t.categoryId)?.name.toLowerCase().includes(searchQuery.toLowerCase())) ||
         (accountMap.get(t.accountId)?.name.toLowerCase().includes(searchQuery.toLowerCase()));
-      return matchesType && matchesSearch;
+      return matchesType && matchesAccount && matchesCategory && matchesSearch;
     });
-  }, [allTransactions, activeFilter, searchQuery, categoryMap, accountMap]);
+  }, [allTransactions, activeFilter, initialAccountId, initialCategoryId, searchQuery, categoryMap, accountMap]);
 
   const grouped = useMemo(() => groupByDate(filtered), [filtered]);
 
@@ -119,38 +142,44 @@ export const TransactionsView: React.FC = () => {
   // Reset pagination when search or filter changes
   useEffect(() => {
     setVisibleDaysCount(30);
-  }, [searchQuery, activeFilter]);
+  }, [searchQuery, activeFilter, initialAccountId, initialCategoryId]);
 
   // ── Initial & Auto Sync ───────────────────────────────────────────────────
 
   const handleSync = async () => {
-    setIsSyncing(true);
+    if (onSync) {
+      await onSync();
+      return;
+    }
+    setIsLocalSyncing(true);
     const result = await syncTransactionsWithGAS();
-    setSyncResult(result);
-    setIsSyncing(false);
+    setLocalSyncResult(result);
+    setIsLocalSyncing(false);
   };
 
   useEffect(() => {
-    const cleanup = registerOnlineSyncListener((result) => setSyncResult(result));
+    if (syncResultGlobal !== undefined) return;
+    const cleanup = registerOnlineSyncListener((result) => setLocalSyncResult(result));
     return cleanup;
-  }, []);
+  }, [syncResultGlobal]);
 
-  // Initial load sync: run once on mount
+  // Initial load sync: run once on mount if no global sync is provided
   useEffect(() => {
+    if (onSync) return;
     let active = true;
     const runInitialSync = async () => {
-      setIsSyncing(true);
+      setIsLocalSyncing(true);
       const res = await syncTransactionsWithGAS();
       if (active) {
-        setSyncResult(res);
-        setIsSyncing(false);
+        setLocalSyncResult(res);
+        setIsLocalSyncing(false);
       }
     };
     runInitialSync();
     return () => {
       active = false;
     };
-  }, []);
+  }, [onSync]);
 
   // ── Delete ────────────────────────────────────────────────────────────────
 
@@ -278,6 +307,40 @@ export const TransactionsView: React.FC = () => {
             />
           </div>
         </div>
+
+        {/* ── Active context filter banner ── */}
+        {(initialAccountId || initialCategoryId) && (
+          <div className="max-w-2xl mx-auto mt-2 flex flex-wrap items-center gap-2">
+            {initialAccountId && (
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40 text-xs font-bold">
+                <span>🏦 חשבון: {accountMap.get(initialAccountId)?.name || initialAccountId}</span>
+                {onClearAccountFilter && (
+                  <button
+                    onClick={onClearAccountFilter}
+                    className="hover:text-white rounded-full p-0.5 ml-1"
+                    title="נקה סינון חשבון"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            )}
+            {initialCategoryId && (
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-xs font-bold">
+                <span>🏷️ קטגוריה: {categoryMap.get(initialCategoryId)?.name || initialCategoryId}</span>
+                {onClearCategoryFilter && (
+                  <button
+                    onClick={onClearCategoryFilter}
+                    className="hover:text-white rounded-full p-0.5 ml-1"
+                    title="נקה סינון קטגוריה"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ── Filter pills ── */}
         <div className="max-w-2xl mx-auto mt-2 flex gap-2 overflow-x-auto pb-1">
